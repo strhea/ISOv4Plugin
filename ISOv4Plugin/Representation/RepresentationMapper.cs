@@ -1,4 +1,8 @@
-﻿using System.Collections.Generic;
+/*
+ * ISO standards can be purchased through the ANSI webstore at https://webstore.ansi.org
+*/
+
+using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using AgGateway.ADAPT.ApplicationDataModel.Representations;
@@ -9,6 +13,7 @@ using UnitOfMeasure = AgGateway.ADAPT.ApplicationDataModel.Common.UnitOfMeasure;
 using AdaptRepresentation = AgGateway.ADAPT.ApplicationDataModel.Representations.Representation;
 using EnumeratedRepresentation = AgGateway.ADAPT.Representation.RepresentationSystem.EnumeratedRepresentation;
 using NumericRepresentation = AgGateway.ADAPT.Representation.RepresentationSystem.NumericRepresentation;
+using System;
 
 namespace AgGateway.ADAPT.ISOv4Plugin.Representation
 {
@@ -30,29 +35,60 @@ namespace AgGateway.ADAPT.ISOv4Plugin.Representation
 
         public AdaptRepresentation Map(int ddi)
         {
-            var matchingDdi = _ddis[ddi];
-            var representation = RepresentationManager.Instance.Representations.FirstOrDefault(x => x.Ddi.GetValueOrDefault() == matchingDdi.Id);
+            if (_ddis.ContainsKey(ddi))
+            {
+                var matchingDdi = _ddis[ddi];
+                var representations = RepresentationManager.Instance.Representations.Where(x => x.Ddi.GetValueOrDefault() == matchingDdi.Id);
+                if (representations.Any())
+                {
+                    //Default the representation mapping approprately on import
+                    var representation = representations.FirstOrDefault(r => r.IsDefaultRepresentationForDDI)
+                                            ??
+                                         representations.First();
 
+                    AdaptRepresentation adaptRep = GetADAPTRepresentation(representation);
+                    if (adaptRep != null)
+                    {
+                        return adaptRep;
+                    }
+                }
+
+                return new ApplicationDataModel.Representations.NumericRepresentation { Code = ddi.ToString("X4"), CodeSource = RepresentationCodeSourceEnum.ISO11783_DDI };
+            }
+            return null;
+        }
+
+        private static AdaptRepresentation GetADAPTRepresentation(ADAPT.Representation.RepresentationSystem.Representation representation)
+        {
             var numericRep = representation as NumericRepresentation;
             if (numericRep != null)
                 return numericRep.ToModelRepresentation();
 
             var enumeratedRep = representation as EnumeratedRepresentation;
-
             if (enumeratedRep != null)
                 return enumeratedRep.ToModelRepresentation();
 
-            return new ApplicationDataModel.Representations.NumericRepresentation {Code = ddi.ToString(CultureInfo.InvariantCulture), CodeSource = RepresentationCodeSourceEnum.ISO11783_DDI};
+            return null;
         }
 
-        public int? Map(AdaptRepresentation adapRepresentation)
+        public static AdaptRepresentation GetRepresentation(string code)
         {
-            if (adapRepresentation == null)
+            var matchingRepresentation = RepresentationManager.Instance.Representations[code];
+            if (matchingRepresentation != null)
+            {
+                return GetADAPTRepresentation(matchingRepresentation);
+            }
+            return null;
+        }
+
+        public int? Map(AdaptRepresentation adaptRepresentation)
+        {
+            if (adaptRepresentation == null)
                 return null;
 
-            var matchingRepresentation = RepresentationManager.Instance.Representations[adapRepresentation.Code];
+            var matchingRepresentation = RepresentationManager.Instance.Representations[adaptRepresentation.Code];
 
-            return matchingRepresentation != null 
+            return matchingRepresentation != null
                 ? matchingRepresentation.Ddi
                 : null;
         }
