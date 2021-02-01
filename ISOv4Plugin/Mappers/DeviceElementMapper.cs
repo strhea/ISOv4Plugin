@@ -350,7 +350,11 @@ namespace AgGateway.ADAPT.ISOv4Plugin.Mappers
             ImportIDs(deviceElement.Id, isoDeviceElement.DeviceElementId);
 
             //Device ID
-            deviceElement.DeviceModelId = TaskDataMapper.InstanceIDMap.GetADAPTID(isoDeviceElement.Device.DeviceId).Value;
+            int? deviceModelId = TaskDataMapper.InstanceIDMap.GetADAPTID(isoDeviceElement.Device.DeviceId);
+            if (deviceModelId.HasValue)
+            {
+                deviceElement.DeviceModelId = deviceModelId.Value;
+            }
 
             //Description
             deviceElement.Description = isoDeviceElement.DeviceElementDesignator;
@@ -361,19 +365,22 @@ namespace AgGateway.ADAPT.ISOv4Plugin.Mappers
             //Parent ID
             if (isoDeviceElement.Parent != null)
             {
+                int? parentDeviceId = null;
                 if (isoDeviceElement.ParentObjectId == isoDeviceElement.DeviceElementObjectId)
                 {
                     //Element has listed itself as its own parent.   Do not include a parent on the adapt element as it will invalidate logic in the hierarchy creation.
                 }
-                else if (isoDeviceElement.Parent is ISODeviceElement)
+                else if (isoDeviceElement.Parent is ISODeviceElement parentElement)
                 {
-                    ISODeviceElement parentElement = isoDeviceElement.Parent as ISODeviceElement;
-                    deviceElement.ParentDeviceId = TaskDataMapper.InstanceIDMap.GetADAPTID(parentElement.DeviceElementId).Value;
+                    parentDeviceId = TaskDataMapper.InstanceIDMap.GetADAPTID(parentElement.DeviceElementId);
                 }
-                else
+                else if (isoDeviceElement.Parent is ISODevice parentDevice)
                 {
-                    ISODevice parentDevice = isoDeviceElement.Parent as ISODevice;
-                    deviceElement.ParentDeviceId = TaskDataMapper.InstanceIDMap.GetADAPTID(parentDevice.DeviceId).Value;
+                    parentDeviceId = TaskDataMapper.InstanceIDMap.GetADAPTID(parentDevice.DeviceId);
+                }
+                if (parentDeviceId.HasValue)
+                {
+                    deviceElement.ParentDeviceId = parentDeviceId.Value;
                 }
             }
 
@@ -390,9 +397,12 @@ namespace AgGateway.ADAPT.ISOv4Plugin.Mappers
                         //Device is a machine
                         deviceElement.DeviceElementType = DeviceElementTypeEnum.Machine;
                     }
-                    else if (deviceElementHierarchy.Children != null && deviceElementHierarchy.AllDescendants.Any(d => d.DeviceElementType == ISODeviceElementType.Navigation))
+                    else if (deviceElementHierarchy.Children != null &&
+                             deviceElementHierarchy.Children.Any(d => d?.DeviceElement.DeviceElementType == ISODeviceElementType.Navigation) && //The Nav element should be a direct descendant of the root
+                             (!deviceElementHierarchy.Children.Any(d => d?.DeviceElement.DeviceElementType == ISODeviceElementType.Section) && //If there are section or function elements, classify as an implement vs. a machine
+                             !deviceElementHierarchy.Children.Any(d => d?.DeviceElement.DeviceElementType == ISODeviceElementType.Function)))
                     {
-                        //Device has a navigation element; classify as a machine
+                        //Device is a machine
                         deviceElement.DeviceElementType = DeviceElementTypeEnum.Machine;
                     }
                     else
@@ -440,13 +450,12 @@ namespace AgGateway.ADAPT.ISOv4Plugin.Mappers
             {
                 //Data belongs to the parent device element from the ISO element referenced
                 //Connector and Navigation data may be stored in Timelog data, but Connectors are not DeviceElements in ADAPT.
-                //The data refers to the parent implement, which must always be a Device DET per the ISO spec.  We map this to a Machine Config
+                //The data refers to the parent implement, which must always be a Device DET per the ISO spec.
                 DeviceElement parent = catalog.DeviceElements.FirstOrDefault(d => d.Id.ReferenceId == adaptDeviceElement.ParentDeviceId);
-                while (parent != null && parent.DeviceElementType != DeviceElementTypeEnum.Machine)
+                while (parent != null && (parent.DeviceElementType != DeviceElementTypeEnum.Machine && parent.DeviceElementType != DeviceElementTypeEnum.Implement))
                 {
                     parent = catalog.DeviceElements.FirstOrDefault(d => d.Id.ReferenceId == parent.ParentDeviceId);
                 }
-
                 if (parent == null)
                 {
                     throw new ApplicationException($"Cannot identify Device for Navigation/Connector DeviceElement: {adaptDeviceElement.Description}.");
@@ -530,7 +539,7 @@ namespace AgGateway.ADAPT.ISOv4Plugin.Mappers
             }
 
             //GPS Offsets
-            if (deviceHierarchy.Children != null && deviceHierarchy.Children.Any(h => h.DeviceElement.DeviceElementType == ISODeviceElementType.Navigation))
+            if (deviceHierarchy.Children != null && deviceHierarchy.Children.Any(h=>h.DeviceElement!=null &&  h.DeviceElement.DeviceElementType == ISODeviceElementType.Navigation))
             {
                 DeviceElementHierarchy navigation = (deviceHierarchy.Children.First(h => h.DeviceElement.DeviceElementType == ISODeviceElementType.Navigation));
                 machineConfig.GpsReceiverXOffset = navigation.XOffsetRepresentation;
@@ -654,6 +663,7 @@ namespace AgGateway.ADAPT.ISOv4Plugin.Mappers
                         if (rootDeviceConfiguration != null)
                         {
                             Connector connector = new Connector();
+                            ImportIDs(connector.Id, hierarchy.DeviceElement.DeviceElementId);
                             connector.DeviceElementConfigurationId = rootDeviceConfiguration.Id.ReferenceId;
                             connector.HitchPointId = hitch.Id.ReferenceId;
                             DataModel.Catalog.Connectors.Add(connector);

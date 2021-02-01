@@ -4,10 +4,10 @@ using System.Diagnostics;
 using System.Linq;
 using AgGateway.ADAPT.ApplicationDataModel.LoggedData;
 using AgGateway.ADAPT.ApplicationDataModel.Representations;
-using AgGateway.ADAPT.ISOv4Plugin.ExtensionMethods;
 using AgGateway.ADAPT.ISOv4Plugin.ObjectModel;
-using AgGateway.ADAPT.ApplicationDataModel.Equipment;
 using AgGateway.ADAPT.ISOv4Plugin.ISOModels;
+using AgGateway.ADAPT.Representation.UnitSystem;
+using AgGateway.ADAPT.ISOv4Plugin.Representation;
 
 namespace AgGateway.ADAPT.ISOv4Plugin.Mappers
 {
@@ -19,11 +19,14 @@ namespace AgGateway.ADAPT.ISOv4Plugin.Mappers
 
     public class SpatialRecordMapper : ISpatialRecordMapper
     {
+        // ATTENTION: CoordinateMultiplier and ZMultiplier also exist in TimeLogMapper.cs!
         private const double CoordinateMultiplier = 0.0000001;
+        private const double ZMultiplier = 0.001;   // In ISO the PositionUp value is specified in mm.
         private readonly IRepresentationValueInterpolator _representationValueInterpolator;
         private readonly IWorkingDataMapper _workingDataMapper;
         private readonly ISectionMapper _sectionMapper;
         private readonly TaskDataMapper _taskDataMapper;
+        private double? _effectiveTimeZoneOffset;
 
         public SpatialRecordMapper(IRepresentationValueInterpolator representationValueInterpolator, ISectionMapper sectionMapper, IWorkingDataMapper workingDataMapper, TaskDataMapper taskDataMapper)
         {
@@ -35,13 +38,41 @@ namespace AgGateway.ADAPT.ISOv4Plugin.Mappers
 
         public IEnumerable<SpatialRecord> Map(IEnumerable<ISOSpatialRow> isoSpatialRows, List<WorkingData> meters, Dictionary<string, List<ISOProductAllocation>> productAllocations)
         {
+            //Compare the first spatial record to product allocations in case there is a mismatch between local time and UTC in comparing dates
+            //This value will reflect an offset between the processing computer's timezone settings vs. the actual offset of the data itself,
+            //and serves to provide a correction if PANs were reported as UTC.
+            //This code will require an exact minute/second match between the first record and one of the PANs to take effect
+            ISOSpatialRow firstSpatialRow = isoSpatialRows.FirstOrDefault();
+            if (firstSpatialRow != null && productAllocations.Any())
+            {
+                foreach (ISOProductAllocation pan in productAllocations.First().Value)
+                {
+                    if (pan.AllocationStamp?.Start != null &&
+                        pan.AllocationStamp.Start.Value.Minute == firstSpatialRow.TimeStart.Minute &&
+                        pan.AllocationStamp.Start.Value.Second == firstSpatialRow.TimeStart.Second)
+                    {
+                        _effectiveTimeZoneOffset = (firstSpatialRow.TimeStart - pan.AllocationStamp.Start.Value).TotalHours;
+                    }
+                }
+            }
+
             _representationValueInterpolator.Clear();
+
             return isoSpatialRows.Select(r => Map(r, meters, productAllocations));
         }
 
         public SpatialRecord Map(ISOSpatialRow isoSpatialRow, List<WorkingData> meters, Dictionary<string, List<ISOProductAllocation>> productAllocations)
         {
             var spatialRecord = new SpatialRecord();
+
+            spatialRecord.Geometry = new ApplicationDataModel.Shapes.Point
+            {
+                X = Convert.ToDouble(isoSpatialRow.EastPosition * CoordinateMultiplier),
+                Y = Convert.ToDouble(isoSpatialRow.NorthPosition * CoordinateMultiplier),
+                Z = Convert.ToDouble(isoSpatialRow.Elevation.GetValueOrDefault() * ZMultiplier)
+            };
+
+            spatialRecord.Timestamp = isoSpatialRow.TimeStart;
 
             foreach (var meter in meters.OfType<NumericWorkingData>())
             {
@@ -53,15 +84,6 @@ namespace AgGateway.ADAPT.ISOv4Plugin.Mappers
                 SetEnumeratedMeterValue(isoSpatialRow, meter, spatialRecord);
             }
 
-            spatialRecord.Geometry = new ApplicationDataModel.Shapes.Point
-            {
-                X = Convert.ToDouble(isoSpatialRow.EastPosition * CoordinateMultiplier),
-                Y = Convert.ToDouble(isoSpatialRow.NorthPosition * CoordinateMultiplier),
-                Z = isoSpatialRow.Elevation
-            };
-
-            spatialRecord.Timestamp = isoSpatialRow.TimeStart;
-            
             return spatialRecord;
         }
 
@@ -89,16 +111,25 @@ namespace AgGateway.ADAPT.ISOv4Plugin.Mappers
             var isoValue = isoSpatialRow.SpatialValues.FirstOrDefault(v =>
                                 v.DataLogValue.ProcessDataDDI != "DFFE" &&
                                 _workingDataMapper.DataLogValuesByWorkingDataID.ContainsKey(meter.Id.ReferenceId) &&
-                                v.DataLogValue.DeviceElementIdRef == _workingDataMapper.DataLogValuesByWorkingDataID[meter.Id.ReferenceId].DeviceElementIdRef && 
+                                v.DataLogValue.DeviceElementIdRef == _workingDataMapper.DataLogValuesByWorkingDataID[meter.Id.ReferenceId].DeviceElementIdRef &&
                                 v.DataLogValue.ProcessDataDDI == _workingDataMapper.DataLogValuesByWorkingDataID[meter.Id.ReferenceId].ProcessDataDDI);
 
 
             if (isoValue != null)
             {
-                var value = new NumericRepresentationValue(meter.Representation as NumericRepresentation, meter.UnitOfMeasure, new NumericValue(meter.UnitOfMeasure, isoValue.Value));
+                ADAPT.ApplicationDataModel.Common.UnitOfMeasure userProvidedUnitOfMeasure = meter.UnitOfMeasure; //Default; no display uom provided.
+                var dvp = isoValue.DeviceProcessData?.DeviceValuePresentation;
+                if (dvp != null)
+                {
+                    //If a DVP element is present, report out the desired display unit of measure as the UserProvidedUnitOfMeasure.
+                    //This will not necessarily map to the Representation.UnitSystem.   
+                    userProvidedUnitOfMeasure = new ApplicationDataModel.Common.UnitOfMeasure() { Code = dvp.UnitDesignator, Scale = dvp.Scale, Offset = dvp.Offset };
+                }
+
+                var value = new NumericRepresentationValue(meter.Representation as NumericRepresentation, userProvidedUnitOfMeasure, new NumericValue(meter.UnitOfMeasure, isoValue.Value));
                 spatialRecord.SetMeterValue(meter, value);
 
-                var other = new NumericRepresentationValue(meter.Representation as NumericRepresentation, meter.UnitOfMeasure, new NumericValue(meter.UnitOfMeasure, isoValue.Value));
+                var other = new NumericRepresentationValue(meter.Representation as NumericRepresentation, userProvidedUnitOfMeasure, new NumericValue(meter.UnitOfMeasure, isoValue.Value));
                 _representationValueInterpolator.SetMostRecentMeterValue(meter, other);
             }
             else if (meter.Representation.Code == "vrProductIndex")
@@ -118,15 +149,15 @@ namespace AgGateway.ADAPT.ISOv4Plugin.Mappers
                     {
                         //There are multiple product allocations for the device element
                         //Find the product allocation that governs this timestamp
-                        ISOProductAllocation relevantPan = productAllocations[detID].FirstOrDefault(p => p.AllocationStamp.Start <= spatialRecord.Timestamp &&
+                        ISOProductAllocation relevantPan = productAllocations[detID].FirstOrDefault(p => Offset(p.AllocationStamp.Start) <= spatialRecord.Timestamp &&
                                                                                                          (p.AllocationStamp.Stop == null ||
-                                                                                                          p.AllocationStamp.Stop >= spatialRecord.Timestamp));
+                                                                                                          Offset(p.AllocationStamp.Stop) >= spatialRecord.Timestamp));
                         if (relevantPan != null)
                         {
                             int? adaptProductID = _taskDataMapper.InstanceIDMap.GetADAPTID(relevantPan.ProductIdRef);
                             numericValue = adaptProductID.HasValue ? adaptProductID.Value : 0d;
                         }
-                    }                    
+                    }
                     var value = new NumericRepresentationValue(meter.Representation as NumericRepresentation, meter.UnitOfMeasure, new NumericValue(meter.UnitOfMeasure, numericValue));
                     spatialRecord.SetMeterValue(meter, value);
                 }
@@ -136,6 +167,15 @@ namespace AgGateway.ADAPT.ISOv4Plugin.Mappers
                 var value = _representationValueInterpolator.Interpolate(meter) as NumericRepresentationValue;
                 spatialRecord.SetMeterValue(meter, value);
             }
+        }
+
+        private DateTime? Offset(DateTime? input)
+        {
+            if (_effectiveTimeZoneOffset.HasValue && input.HasValue)
+            {
+                return input.Value.AddHours(_effectiveTimeZoneOffset.Value);
+            }
+            return input;
         }
     }
 }

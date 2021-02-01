@@ -106,9 +106,9 @@ namespace AgGateway.ADAPT.ISOv4Plugin.Mappers
             }
 
             List<ISODataLogValue> dlvs = new List<ISODataLogValue>();
-            for(int i = 0; i < workingDatas.Count(); i++)
+            int i = 0;
+            foreach (WorkingData workingData in workingDatas)
             {
-                WorkingData workingData = workingDatas[i];
 
                 //DDI
                 int? mappedDDI = RepresentationMapper.Map(workingData.Representation);
@@ -140,15 +140,20 @@ namespace AgGateway.ADAPT.ISOv4Plugin.Mappers
                         dlv.DeviceElementIdRef = TaskDataMapper.InstanceIDMap.GetISOID(deviceElementConfiguration.DeviceElementId);
                     }
                 }
-                dlvs.Add(dlv);
-                _dataLogValueOrdersByWorkingDataID.Add(workingData.Id.ReferenceId, i);
+
+                if (dlv.ProcessDataDDI != null && dlv.DeviceElementIdRef != null)
+                {
+                    dlvs.Add(dlv);
+                    _dataLogValueOrdersByWorkingDataID.Add(workingData.Id.ReferenceId, i++);
+                }
             }
             return dlvs;
         }
 
         private class BinaryWriter
-        {
+        {   // ATTENTION: CoordinateMultiplier and ZMultiplier also exist in Import\SpatialRecordMapper.cs!
             private const double CoordinateMultiplier = 0.0000001;
+            private const double ZMultiplier = 0.001;   // In ISO the PositionUp value is specified in mm.
             private readonly DateTime _januaryFirst1980 = new DateTime(1980, 1, 1);
 
             private readonly IEnumeratedValueMapper _enumeratedValueMapper;
@@ -206,7 +211,7 @@ namespace AgGateway.ADAPT.ISOv4Plugin.Mappers
                     {
                         north = (Int32)(location.Y / CoordinateMultiplier);
                         east = (Int32)(location.X / CoordinateMultiplier);
-                        up = (Int32)(location.Z.GetValueOrDefault());
+                        up = (Int32)(location.Z.GetValueOrDefault() / ZMultiplier);
                     }
                 }
 
@@ -236,7 +241,7 @@ namespace AgGateway.ADAPT.ISOv4Plugin.Mappers
                 var dlvsToWrite = new Dictionary<int, uint>();
                 var workingDatasWithValues = workingDatas.Where(x => spatialRecord.GetMeterValue(x) != null);
 
-                foreach (WorkingData workingData in workingDatasWithValues)
+                foreach (WorkingData workingData in workingDatasWithValues.Where(d => _dlvOrdersByWorkingDataID.ContainsKey(d.Id.ReferenceId)))
                 {
                     int order = _dlvOrdersByWorkingDataID[workingData.Id.ReferenceId];
 
@@ -297,9 +302,38 @@ namespace AgGateway.ADAPT.ISOv4Plugin.Mappers
             SectionMapper sectionMapper = new SectionMapper(workingDataMapper, TaskDataMapper);
             SpatialRecordMapper spatialMapper = new SpatialRecordMapper(new RepresentationValueInterpolator(), sectionMapper, workingDataMapper, TaskDataMapper);
             IEnumerable<ISOSpatialRow> isoRecords = ReadTimeLog(isoTimeLog, this.TaskDataPath);
+            bool useDeferredExecution = false;
             if (isoRecords != null)
             {
-                isoRecords = isoRecords.ToList(); //Avoids multiple reads
+                try
+                {
+                    if (TaskDataMapper.Properties != null)
+                    {
+                        //Set this property to override the default behavior of pre-iterating the data
+                        bool.TryParse(TaskDataMapper.Properties.GetProperty("SpatialRecordDeferredExecution"), out useDeferredExecution);
+                    }
+
+                    if (!useDeferredExecution)
+                    {
+                        isoRecords = isoRecords.ToList(); //Avoids multiple reads
+                    }
+
+                    //Set a UTC "delta" from the first record where possible.  We set only one per data import.
+                    if (!TaskDataMapper.GPSToLocalDelta.HasValue)
+                    {
+                        var firstRecord = isoRecords.FirstOrDefault();
+                        if (firstRecord != null && firstRecord.GpsUtcDateTime.HasValue)
+                        {
+                            //Local - UTC = Delta.  This value will be rough based on the accuracy of the clock settings but will expose the ability to derive the UTC times from the exported local times.
+                            TaskDataMapper.GPSToLocalDelta = (firstRecord.TimeStart - firstRecord.GpsUtcDateTime.Value).TotalHours;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    TaskDataMapper.AddError($"Timelog file {isoTimeLog.Filename} is invalid.  Skipping.", ex.Message, null, ex.StackTrace);
+                    return null;
+                }
                 ISOTime time = isoTimeLog.GetTimeElement(this.TaskDataPath);
 
                 //Identify unique devices represented in this TimeLog data
@@ -383,14 +417,25 @@ namespace AgGateway.ADAPT.ISOv4Plugin.Mappers
             {
                 if (dvc.DeviceElements.Select(d => d.DeviceElementId).Contains(pan.DeviceElementIdRef)) //Filter PANs by this DVC
                 {
-                    if (!output.ContainsKey(pan.DeviceElementIdRef))
-                    {
-                        output.Add(pan.DeviceElementIdRef, new List<ISOProductAllocation>());
-                    }
-                    output[pan.DeviceElementIdRef].Add(pan);
+                    ISODeviceElement deviceElement = dvc.DeviceElements.First(d => d.DeviceElementId == pan.DeviceElementIdRef);
+                    AddProductAllocationsForDeviceElement(output, pan, deviceElement);
                 }
             }
             return output;
+        }
+
+        private void AddProductAllocationsForDeviceElement(Dictionary<string, List<ISOProductAllocation>> productAllocations, ISOProductAllocation pan, ISODeviceElement deviceElement)
+        {
+            if (!productAllocations.ContainsKey(deviceElement.DeviceElementId))
+            {
+                productAllocations.Add(deviceElement.DeviceElementId, new List<ISOProductAllocation>());
+            }
+            productAllocations[deviceElement.DeviceElementId].Add(pan);
+
+            foreach (ISODeviceElement child in deviceElement.ChildDeviceElements)
+            {
+                AddProductAllocationsForDeviceElement(productAllocations, pan, child);
+            }
         }
 
         private OperationTypeEnum GetOperationTypeFromLoggingDevices(ISOTime time)
@@ -428,12 +473,12 @@ namespace AgGateway.ADAPT.ISOv4Plugin.Mappers
         private IEnumerable<ISOSpatialRow> ReadTimeLog(ISOTimeLog timeLog, string dataPath)
         {
             ISOTime templateTime = timeLog.GetTimeElement(dataPath);
-            string filePath = Path.Combine(dataPath, string.Concat(timeLog.Filename, ".bin"));
-
-            if (templateTime != null && File.Exists(filePath))
+            string binName = string.Concat(timeLog.Filename, ".bin");
+            string filePath = dataPath.GetDirectoryFiles(binName, SearchOption.TopDirectoryOnly).FirstOrDefault();
+            if (templateTime != null && filePath != null)
             {
                 BinaryReader reader = new BinaryReader();
-                return reader.Read(filePath, templateTime);
+                return reader.Read(filePath, templateTime, TaskDataMapper.DeviceElementHierarchies);
             }
             return null;
         }
@@ -442,7 +487,7 @@ namespace AgGateway.ADAPT.ISOv4Plugin.Mappers
         {
             private DateTime _firstDayOf1980 = new DateTime(1980, 01, 01);
 
-            public IEnumerable<ISOSpatialRow> Read(string fileName, ISOTime templateTime)
+            public IEnumerable<ISOSpatialRow> Read(string fileName, ISOTime templateTime, DeviceElementHierarchies deviceHierarchies)
             {
                 if (templateTime == null)
                     yield break;
@@ -450,7 +495,7 @@ namespace AgGateway.ADAPT.ISOv4Plugin.Mappers
                 if (!File.Exists(fileName))
                     yield break;
 
-                using (var binaryReader = new System.IO.BinaryReader(File.Open(fileName, FileMode.Open)))
+                using (var binaryReader = new System.IO.BinaryReader(File.Open(fileName, FileMode.Open, FileAccess.Read, FileShare.Read)))
                 {
                     while (binaryReader.BaseStream.Position < binaryReader.BaseStream.Length)
                     {
@@ -518,7 +563,29 @@ namespace AgGateway.ADAPT.ISOv4Plugin.Mappers
                             }
                         }
 
+                        //Some datasets end here
+                        if (binaryReader.BaseStream.Position >= binaryReader.BaseStream.Length)
+                        {
+                            break;
+                        }
+
                         var numberOfDLVs = binaryReader.ReadByte();
+                        //Some datasets end here
+                        if (binaryReader.BaseStream.Position >= binaryReader.BaseStream.Length)
+                        {
+                            break;
+                        }
+
+                        //If the reported number of values does not fit into the stream, correct the numberOfDLVs
+                        if (numberOfDLVs > 0)
+                        {
+                            var endPosition = binaryReader.BaseStream.Position + 5 * numberOfDLVs;
+                            if (endPosition > binaryReader.BaseStream.Length)
+                            {
+                                numberOfDLVs = (byte)Math.Floor((endPosition - binaryReader.BaseStream.Length) / 5d);
+                            }
+                        }
+
                         record.SpatialValues = new List<SpatialValue>();
 
                         //Read DLVs out of the TLG.bin
@@ -527,7 +594,7 @@ namespace AgGateway.ADAPT.ISOv4Plugin.Mappers
                             var order = binaryReader.ReadByte();
                             var value = binaryReader.ReadInt32();
 
-                            SpatialValue spatialValue = CreateSpatialValue(templateTime, order, value);
+                            SpatialValue spatialValue = CreateSpatialValue(templateTime, order, value, deviceHierarchies);
                             if(spatialValue != null)
                                 record.SpatialValues.Add(spatialValue);
                         }
@@ -597,13 +664,17 @@ namespace AgGateway.ADAPT.ISOv4Plugin.Mappers
                 return _firstDayOf1980;
             }
 
-            private static SpatialValue CreateSpatialValue(ISOTime templateTime, byte order, int value)
+            private static SpatialValue CreateSpatialValue(ISOTime templateTime, byte order, int value, DeviceElementHierarchies deviceHierarchies)
             {
                 var dataLogValues = templateTime.DataLogValues;
                 var matchingDlv = dataLogValues.ElementAtOrDefault(order);
 
                 if (matchingDlv == null)
                     return null;
+
+                ISODeviceElement det = deviceHierarchies.GetISODeviceElementFromID(matchingDlv.DeviceElementIdRef);
+                ISODevice dvc = det?.Device;
+                ISODeviceProcessData dpd = dvc?.DeviceProcessDatas?.FirstOrDefault(d => d.DDI == matchingDlv.ProcessDataDDI);
 
                 var ddis = DdiLoader.Ddis;
 
@@ -618,6 +689,7 @@ namespace AgGateway.ADAPT.ISOv4Plugin.Mappers
                     Id = order,
                     DataLogValue = matchingDlv,
                     Value = value * resolution,
+                    DeviceProcessData = dpd
                 };
 
                 return spatialValue;

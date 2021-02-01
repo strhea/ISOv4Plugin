@@ -1,4 +1,4 @@
-﻿/*
+/*
  * ISO standards can be purchased through the ANSI webstore at https://webstore.ansi.org
 */
 
@@ -23,8 +23,8 @@ namespace AgGateway.ADAPT.ISOv4Plugin.Mappers
 {
     public interface IConnectionMapper
     {
-        IEnumerable<ISOConnection> ExportConnections(int loggedDataOrWorkItemID, IEnumerable<EquipmentConfiguration> adaptConnections);
-        ISOConnection ExportConnection(int loggedDataOrWorkItemID, EquipmentConfiguration adaptConnection);
+        IEnumerable<ISOConnection> ExportConnections(ISOTask task, IEnumerable<EquipmentConfiguration> adaptConnections);
+        ISOConnection ExportConnection(ISOTask task, EquipmentConfiguration adaptConnection);
 
         IEnumerable<EquipmentConfiguration> ImportConnections(ISOTask isoTask);
         EquipmentConfiguration ImportConnection(ISOTask isoTask, ISOConnection isoConnection);
@@ -37,18 +37,18 @@ namespace AgGateway.ADAPT.ISOv4Plugin.Mappers
         }
 
         #region Export
-        public IEnumerable<ISOConnection> ExportConnections(int loggedDataOrWorkItemID, IEnumerable<EquipmentConfiguration> adaptConnections)
+        public IEnumerable<ISOConnection> ExportConnections(ISOTask task, IEnumerable<EquipmentConfiguration> adaptConnections)
         {
             List <ISOConnection> connections = new List<ISOConnection>();
             foreach (EquipmentConfiguration adaptConnection in adaptConnections)
             {
-                ISOConnection isoConnection = ExportConnection(loggedDataOrWorkItemID, adaptConnection);
+                ISOConnection isoConnection = ExportConnection(task, adaptConnection);
                 connections.Add(isoConnection);
             }
             return connections;
         }
 
-        public ISOConnection ExportConnection(int loggedDataOrWorkItemID, EquipmentConfiguration adaptConnection)
+        public ISOConnection ExportConnection(ISOTask task, EquipmentConfiguration adaptConnection)
         {
             ISOConnection isoConnection = new ISOConnection();
 
@@ -97,8 +97,6 @@ namespace AgGateway.ADAPT.ISOv4Plugin.Mappers
             //DataLogTriggers
             if (adaptConnection.DataLogTriggers.Any())
             {
-                string taskID = TaskDataMapper.InstanceIDMap.GetISOID(loggedDataOrWorkItemID);
-                ISOTask task = TaskDataMapper.ISOTaskData.ChildElements.OfType<ISOTask>().First(t => t.TaskID == taskID);
                 DataLogTriggerMapper dltMapper = new DataLogTriggerMapper(TaskDataMapper);
                 task.DataLogTriggers = dltMapper.ExportDataLogTriggers(adaptConnection.DataLogTriggers).ToList();
             }
@@ -128,17 +126,21 @@ namespace AgGateway.ADAPT.ISOv4Plugin.Mappers
 
             //First Device Element
             int? connectorID = TaskDataMapper.InstanceIDMap.GetADAPTID(isoConnection.DeviceElementIdRef_0);
+            Connector adaptConnector1 = null;
             if (connectorID.HasValue)
             {
-                Connector adaptConnector1 = DataModel.Catalog.Connectors.Single(d => d.Id.ReferenceId == connectorID.Value);
-                equipConfig.Connector1Id = adaptConnector1.Id.ReferenceId;
+                adaptConnector1 = DataModel.Catalog.Connectors.SingleOrDefault(d => d.Id.ReferenceId == connectorID.Value);
+                if (adaptConnector1 != null)
+                {
+                    equipConfig.Connector1Id = adaptConnector1.Id.ReferenceId;
 
-                ISODeviceElement isoDeviceElement = TaskDataMapper.DeviceElementHierarchies.GetISODeviceElementFromID(isoConnection.DeviceElementIdRef_0);
-                descriptionBuilder.Append(isoDeviceElement.Device.DeviceDesignator);
-                descriptionBuilder.Append(":");
-                descriptionBuilder.Append(isoDeviceElement.DeviceElementDesignator);
+                    ISODeviceElement isoDeviceElement = TaskDataMapper.DeviceElementHierarchies.GetISODeviceElementFromID(isoConnection.DeviceElementIdRef_0);
+                    descriptionBuilder.Append(isoDeviceElement.Device.DeviceDesignator);
+                    descriptionBuilder.Append(":");
+                    descriptionBuilder.Append(isoDeviceElement.DeviceElementDesignator);
+                }
             }
-            else
+            if (adaptConnector1 == null)
             {
                 descriptionBuilder.Append("Unknown");
             }
@@ -146,18 +148,22 @@ namespace AgGateway.ADAPT.ISOv4Plugin.Mappers
             descriptionBuilder.Append("<->");
 
             //Second Device Element
+            Connector adaptConnector2 = null;
             connectorID = TaskDataMapper.InstanceIDMap.GetADAPTID(isoConnection.DeviceElementIdRef_1);
             if (connectorID.HasValue)
             {
-                Connector adaptConnector2 = DataModel.Catalog.Connectors.Single(d => d.Id.ReferenceId == connectorID.Value);
-                equipConfig.Connector2Id = adaptConnector2.Id.ReferenceId;
+                adaptConnector2 = DataModel.Catalog.Connectors.SingleOrDefault(d => d.Id.ReferenceId == connectorID.Value);
+                if (adaptConnector2 != null)
+                {
+                    equipConfig.Connector2Id = adaptConnector2.Id.ReferenceId;
 
-                ISODeviceElement isoDeviceElement = TaskDataMapper.DeviceElementHierarchies.GetISODeviceElementFromID(isoConnection.DeviceElementIdRef_1);
-                descriptionBuilder.Append(isoDeviceElement.Device.DeviceDesignator);
-                descriptionBuilder.Append(":");
-                descriptionBuilder.Append(isoDeviceElement.DeviceElementDesignator);
+                    ISODeviceElement isoDeviceElement = TaskDataMapper.DeviceElementHierarchies.GetISODeviceElementFromID(isoConnection.DeviceElementIdRef_1);
+                    descriptionBuilder.Append(isoDeviceElement.Device.DeviceDesignator);
+                    descriptionBuilder.Append(":");
+                    descriptionBuilder.Append(isoDeviceElement.DeviceElementDesignator);
+                }
             }
-            else
+            if (adaptConnector2 == null)
             {
                 descriptionBuilder.Append("Unknown");
             }

@@ -58,7 +58,7 @@ namespace AgGateway.ADAPT.ISOv4Plugin.Mappers
                         }
 
                         //Read any spatially-listed widths/offsets on this data onto the DeviceElementConfiguration objects
-                        hierarchy.SetWidthsAndOffsetsFromSpatialData(isoRecords, config, RepresentationMapper);
+                        hierarchy.SetWidthsAndOffsetsFromSpatialData(time, isoRecords, config, RepresentationMapper);
 
                         deviceElementUse = sections.FirstOrDefault(d => d.DeviceConfigurationId == config.Id.ReferenceId);
                         if (deviceElementUse == null)
@@ -94,6 +94,22 @@ namespace AgGateway.ADAPT.ISOv4Plugin.Mappers
                         if (!sections.Contains(deviceElementUse))
                         {
                             sections.Add(deviceElementUse);
+                        }
+                    }
+                    else if (hierarchy.DeviceElement.DeviceElementType == ISOEnumerations.ISODeviceElementType.Connector)
+                    {
+                        int? connectorID = TaskDataMapper.InstanceIDMap.GetADAPTID(hierarchy.DeviceElement.DeviceElementId).Value;
+                        if (connectorID.HasValue)
+                        {
+                            Connector adaptConnector = DataModel.Catalog.Connectors.FirstOrDefault(c => c.Id.ReferenceId == connectorID.Value);
+                            if (adaptConnector != null)
+                            {
+                                HitchPoint hitch = DataModel.Catalog.HitchPoints.FirstOrDefault(h => h.Id.ReferenceId == adaptConnector.HitchPointId);
+                                if (hitch != null)
+                                {
+                                    hierarchy.SetHitchOffsetsFromSpatialData(time, isoRecords, hitch, RepresentationMapper);
+                                }
+                            }
                         }
                     }
                 }

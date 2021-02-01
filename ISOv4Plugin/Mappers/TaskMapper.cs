@@ -200,7 +200,7 @@ namespace AgGateway.ADAPT.ISOv4Plugin.Mappers
                 if (taskEquipmentConfigIDs.Any())
                 {
                     IEnumerable<EquipmentConfiguration> taskEquipmentConfigs = DataModel.Catalog.EquipmentConfigurations.Where(d => taskEquipmentConfigIDs.Contains(d.Id.ReferenceId));
-                    task.Connections = ConnectionMapper.ExportConnections(loggedData.Id.ReferenceId, taskEquipmentConfigs).ToList();
+                    task.Connections = ConnectionMapper.ExportConnections(task, taskEquipmentConfigs).ToList();
                 }
             }
 
@@ -623,19 +623,6 @@ namespace AgGateway.ADAPT.ISOv4Plugin.Mappers
                 loggedData.Notes = canMapper.ImportCommentAllocations(isoLoggedTask.CommentAllocations).ToList();
             }
 
-            //Summaries
-            if (isoLoggedTask.Times.Any(t => t.HasStart && t.HasType)) //Nothing added without a Start & Type attribute
-            {
-                //An ADAPT LoggedData has exactly one summary.   This is what necessitates that ISO Task maps to LoggedData and ISO TimeLog maps to one or more Operation Data objects
-                Summary summary = ImportSummary(isoLoggedTask, loggedData); 
-                if (DataModel.Documents.Summaries == null)
-                {
-                    DataModel.Documents.Summaries = new List<Summary>();
-                }
-                (DataModel.Documents.Summaries as List<Summary>).Add(summary);
-                loggedData.SummaryId = summary.Id.ReferenceId;
-            }
-
             //Operation Data
             if (isoLoggedTask.TimeLogs.Any())
             {
@@ -665,6 +652,21 @@ namespace AgGateway.ADAPT.ISOv4Plugin.Mappers
 
                 DataModel.Catalog.EquipmentConfigurations.AddRange(equipConfigs);
             }
+
+            //Summaries
+            if (isoLoggedTask.Times.Any(t => t.HasStart && t.HasType)) //Nothing added without a Start & Type attribute
+            {
+                //An ADAPT LoggedData has exactly one summary.   This is what necessitates that ISO Task maps to LoggedData and ISO TimeLog maps to one or more Operation Data objects
+                Summary summary = ImportSummary(isoLoggedTask, loggedData);
+                if (DataModel.Documents.Summaries == null)
+                {
+                    DataModel.Documents.Summaries = new List<Summary>();
+                }
+                (DataModel.Documents.Summaries as List<Summary>).Add(summary);
+                loggedData.SummaryId = summary.Id.ReferenceId;
+            }
+
+            loggedData.ReleaseSpatialData = () => { };
 
             return loggedData;
         }

@@ -46,6 +46,7 @@ namespace AgGateway.ADAPT.ISOv4Plugin.ISOModels
             xmlBuilder.WriteXmlAttribute("E", DeviceSerialNumber);
             xmlBuilder.WriteXmlAttribute("F", DeviceStructureLabel);
             xmlBuilder.WriteXmlAttribute("G", DeviceLocalizationLabel);
+            base.WriteXML(xmlBuilder);
             foreach (ISODeviceElement item in DeviceElements) { item.WriteXML(xmlBuilder); }
             foreach (ISODeviceProcessData item in DeviceProcessDatas) { item.WriteXML(xmlBuilder); }
             foreach (ISODeviceProperty item in DeviceProperties) { item.WriteXML(xmlBuilder); }
@@ -72,22 +73,22 @@ namespace AgGateway.ADAPT.ISOv4Plugin.ISOModels
                 device.DeviceElements.AddRange(ISODeviceElement.ReadXML(detNodes, device));
             }
 
+            XmlNodeList dvpNodes = node.SelectNodes("DVP");
+            if (dvpNodes != null)
+            {
+                device.DeviceValuePresentations.AddRange(ISODeviceValuePresentation.ReadXML(dvpNodes));
+            }
+
             XmlNodeList dpdNodes = node.SelectNodes("DPD");
             if (dpdNodes != null)
             {
-                device.DeviceProcessDatas.AddRange(ISODeviceProcessData.ReadXML(dpdNodes));
+                device.DeviceProcessDatas.AddRange(ISODeviceProcessData.ReadXML(dpdNodes, device.DeviceValuePresentations));
             }
 
             XmlNodeList dptNodes = node.SelectNodes("DPT");
             if (dptNodes != null)
             {
                 device.DeviceProperties.AddRange(ISODeviceProperty.ReadXML(dptNodes));
-            }
-
-            XmlNodeList dvpNodes = node.SelectNodes("DVP");
-            if (dvpNodes != null)
-            {
-                device.DeviceValuePresentations.AddRange(ISODeviceValuePresentation.ReadXML(dvpNodes));
             }
 
             return device;

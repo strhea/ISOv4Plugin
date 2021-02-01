@@ -9,6 +9,7 @@ using AgGateway.ADAPT.ISOv4Plugin.ISOEnumerations;
 using System;
 using AgGateway.ADAPT.ISOv4Plugin.ObjectModel;
 using AgGateway.ADAPT.ApplicationDataModel.ADM;
+using System.Linq;
 
 namespace AgGateway.ADAPT.ISOv4Plugin.ISOModels
 {
@@ -22,6 +23,8 @@ namespace AgGateway.ADAPT.ISOv4Plugin.ISOModels
         public string Designator { get; set; }
         public uint? DeviceValuePresentationObjectId { get; set; }
 
+        public ISODeviceValuePresentation DeviceValuePresentation { get; set; }
+
         public override XmlWriter WriteXML(XmlWriter xmlBuilder)
         {
             xmlBuilder.WriteStartElement("DPD");
@@ -31,11 +34,12 @@ namespace AgGateway.ADAPT.ISOv4Plugin.ISOModels
             xmlBuilder.WriteXmlAttribute<int>("D", TriggerMethods);
             xmlBuilder.WriteXmlAttribute("E", Designator);
             xmlBuilder.WriteXmlAttribute<uint>("F", DeviceValuePresentationObjectId);
+            base.WriteXML(xmlBuilder);
             xmlBuilder.WriteEndElement();
             return xmlBuilder;
         }
 
-        public static ISODeviceProcessData ReadXML(XmlNode node)
+        public static ISODeviceProcessData ReadXML(XmlNode node, List<ISODeviceValuePresentation> deviceValuePresentations)
         {
             ISODeviceProcessData item = new ISODeviceProcessData();
             item.ObjectID = node.GetXmlNodeValueAsUInt("@A");
@@ -44,16 +48,20 @@ namespace AgGateway.ADAPT.ISOv4Plugin.ISOModels
             item.TriggerMethods = node.GetXmlNodeValueAsInt("@D");
             item.Designator = node.GetXmlNodeValue("@E");
             item.DeviceValuePresentationObjectId = node.GetXmlNodeValueAsNullableUInt("@F");
+            if (item.DeviceValuePresentationObjectId.HasValue)
+            {
+                item.DeviceValuePresentation = deviceValuePresentations.FirstOrDefault(d => d.ObjectID == item.DeviceValuePresentationObjectId.Value);
+            }
 
             return item;
         }
 
-        public static IEnumerable<ISODeviceProcessData> ReadXML(XmlNodeList nodes)
+        public static IEnumerable<ISODeviceProcessData> ReadXML(XmlNodeList nodes, List<ISODeviceValuePresentation> deviceValuePresentations)
         {
             List<ISODeviceProcessData> items = new List<ISODeviceProcessData>();
             foreach (XmlNode node in nodes)
             {
-                items.Add(ISODeviceProcessData.ReadXML(node));
+                items.Add(ISODeviceProcessData.ReadXML(node, deviceValuePresentations));
             }
             return items;
         }
